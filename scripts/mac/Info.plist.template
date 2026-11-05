@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>Linear Dashboard</string>
+  <key>CFBundleName</key>
+  <string>LinearDashboard</string>
+  <key>CFBundleExecutable</key>
+  <string>LinearDashboard</string>
+  <key>CFBundleIdentifier</key>
+  <string>io.github.iamfuzz.linear-dashboard</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>__VERSION__</string>
+  <key>CFBundleVersion</key>
+  <string>__VERSION__</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>__MIN_MACOS__</string>
+  <key>LSArchitecturePriority</key>
+  <array>
+    <string>arm64</string>
+  </array>
+  <key>LSRequiresNativeExecution</key>
+  <true/>
+  <!-- No Dock icon or menu bar: the launcher starts a background server and exits.
+       Use the Quit button in the dashboard to stop it. -->
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>Internal tool. Bundles Node.js (MIT, see Contents/Resources/node/LICENSE).</string>
+</dict>
+</plist>

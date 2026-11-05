@@ -2,6 +2,7 @@ import "server-only";
 
 import { CACHE_TTL_MS, INITIATIVE_ID, LINEAR_API_URL } from "./config";
 import { compareWorkflowStates, validatePriorityUpdate, validateStatusUpdate } from "./dashboard";
+import { getApiKey } from "./secret";
 import { LinearError, type DashboardData, type Issue, type Team } from "./types";
 
 interface GqlResponse<T> {
@@ -9,13 +10,15 @@ interface GqlResponse<T> {
   errors?: { message: string; extensions?: { code?: string; type?: string } }[];
 }
 
-async function gql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-  const key = process.env.LINEAR_API_KEY?.trim();
+async function gql<T>(
+  query: string,
+  variables: Record<string, unknown>,
+  explicitKey?: string,
+): Promise<T> {
+  // Env LINEAR_API_KEY first, then the macOS Keychain (see lib/secret.ts).
+  const key = explicitKey ?? (await getApiKey());
   if (!key) {
-    throw new LinearError(
-      "missing_key",
-      "LINEAR_API_KEY is not set. Add it to .env.local and restart the dev server.",
-    );
+    throw new LinearError("missing_key", "No Linear API key is set up yet.");
   }
 
   let res: Response;
@@ -54,7 +57,7 @@ async function gql<T>(query: string, variables: Record<string, unknown>): Promis
   if (authFailed) {
     throw new LinearError(
       "invalid_key",
-      "Linear rejected LINEAR_API_KEY. Check that the key is correct and has not been revoked.",
+      "Linear rejected the API key. Check that the key is correct and has not been revoked.",
     );
   }
   if (!res.ok || errors.length || !body?.data) {
@@ -62,6 +65,22 @@ async function gql<T>(query: string, variables: Record<string, unknown>): Promis
     throw new LinearError("api_error", `Linear API error: ${msg}`);
   }
   return body.data;
+}
+
+const VIEWER_QUERY = /* GraphQL */ `
+  query Viewer {
+    viewer { id name }
+  }
+`;
+
+/**
+ * Check a candidate key with a cheap read-only `viewer` query before it is saved.
+ * Returns the key owner's name. Throws LinearError (invalid_key / api_error).
+ */
+export async function validateApiKey(key: string): Promise<{ id: string; name: string }> {
+  const data = await gql<{ viewer: { id: string; name: string } | null }>(VIEWER_QUERY, {}, key);
+  if (!data.viewer) throw new LinearError("invalid_key", "Linear did not recognize this key.");
+  return data.viewer;
 }
 
 const INITIATIVE_QUERY = /* GraphQL */ `

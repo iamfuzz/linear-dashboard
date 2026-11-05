@@ -20,6 +20,24 @@ registerHooks({
 
 const linear = await import("../lib/linear.ts");
 const dash = await import("../lib/dashboard.ts");
+const secret = await import("../lib/secret.ts");
+
+// Mocked macOS Keychain (`/usr/bin/security`): never touches the real Keychain.
+const kc = { stored: null, calls: [], failWrite: false };
+const mockSecurity = async (args, input) => {
+  kc.calls.push({ args, input });
+  if (args[0] === "find-generic-password") {
+    return kc.stored ? { code: 0, stdout: `${kc.stored}\n` } : { code: 44, stdout: "" };
+  }
+  if (args[0] === "-i") {
+    if (kc.failWrite) return { code: 2, stdout: "" };
+    const hex = /-X ([0-9a-f]+)/.exec(input ?? "")?.[1];
+    kc.stored = hex ? Buffer.from(hex, "hex").toString("utf8") : null;
+    return { code: hex ? 0 : 2, stdout: "" };
+  }
+  return { code: 1, stdout: "" };
+};
+secret._setSecurityRunnerForTests(mockSecurity);
 
 const VIEWER = { id: "u-brian", name: "Brian Thomason" };
 const projects = [
@@ -398,5 +416,88 @@ const both = dash.applyOverrides(base, { [se1.id]: { priority: 1, stateId: "t-se
 const se1Both = both.find((i) => i.id === se1.id);
 assert.deepEqual([se1Both.priority, se1Both.priorityLabel, se1Both.state.type], [1, "Urgent", "started"]);
 assert.equal(dash.applyOverrides(base, {}, data.teams)[0], base[0], "no overrides: same objects");
+
+// 22. API key resolution: env LINEAR_API_KEY first, then Keychain, else missing
+const ENV_KEY = "lin_api_envkey0000000000000";
+const KC_KEY = "lin_api_keychainkey00000000";
+kc.stored = null;
+secret._setSecurityRunnerForTests(mockSecurity); // reset in-memory cache
+delete process.env.LINEAR_API_KEY;
+assert.equal(await secret.getApiKey(), null);
+assert.equal(await secret.getKeySource(), "none");
+kc.stored = KC_KEY;
+assert.equal(await secret.getApiKey(), KC_KEY, "Keychain used when env is unset");
+assert.equal(await secret.getKeySource(), "keychain");
+const lookup = kc.calls.find((c) => c.args[0] === "find-generic-password");
+assert.deepEqual(lookup.args, ["find-generic-password", "-a", "linear-api-key", "-s", "LinearDashboard", "-w"]);
+process.env.LINEAR_API_KEY = `  ${ENV_KEY}  `;
+assert.equal(await secret.getApiKey(), ENV_KEY, "env wins over Keychain (trimmed)");
+assert.equal(await secret.getKeySource(), "env");
+process.env.LINEAR_API_KEY = "   ";
+assert.equal(await secret.getApiKey(), KC_KEY, "blank env falls back to Keychain");
+// Keychain value is cached per process
+kc.calls.length = 0;
+await secret.getApiKey();
+assert.equal(kc.calls.length, 0, "Keychain read cached in memory");
+
+// 23. gql uses the resolved key: Keychain key in the Authorization header when env is unset
+delete process.env.LINEAR_API_KEY;
+mode = "ok";
+linear.clearDashboardCache();
+calls.length = 0;
+await linear.getDashboardData();
+assert.equal(calls[0].headers.Authorization, KC_KEY);
+kc.stored = null;
+secret._setSecurityRunnerForTests(mockSecurity);
+linear.clearDashboardCache();
+calls.length = 0;
+await assert.rejects(linear.getDashboardData(), (e) => e.kind === "missing_key");
+assert.equal(calls.length, 0, "no request when neither env nor Keychain has a key");
+
+// 24. Key format checks (before any network call)
+for (const bad of [undefined, null, 42, "", "   ", "lin_api_short", "lin_api_has space 0000000000", 'lin_api_quote"000000000000', "lin_api_semi;rm -rf 00000000", "sk_live_0000000000000000000", "lin_api_" + "x".repeat(200)]) {
+  assert.equal(secret.checkApiKeyFormat(bad).ok, false, `reject key ${JSON.stringify(bad)}`);
+}
+assert.deepEqual(secret.checkApiKeyFormat(`  ${KC_KEY}\n`), { ok: true, key: KC_KEY });
+
+// 25. Saving: key goes to `security -i` on stdin (hex), never in argv; invalid keys never saved
+kc.calls.length = 0;
+await secret.saveApiKeyToKeychain(KC_KEY);
+assert.equal(kc.calls.length, 1);
+assert.deepEqual(kc.calls[0].args, ["-i"], "only -i on the command line");
+assert.ok(!kc.calls[0].args.join(" ").includes(KC_KEY), "key not in argv");
+assert.ok(!kc.calls[0].input.includes(KC_KEY), "key is hex-encoded on stdin");
+assert.match(kc.calls[0].input, /^add-generic-password -U -a linear-api-key -s LinearDashboard .* -X [0-9a-f]+\n$/);
+assert.equal(kc.stored, KC_KEY);
+assert.equal(await secret.getApiKey(), KC_KEY);
+kc.calls.length = 0;
+await assert.rejects(secret.saveApiKeyToKeychain("not a key"), /Linear API key/);
+assert.equal(kc.calls.length, 0, "invalid key never reaches security");
+kc.failWrite = true;
+await assert.rejects(secret.saveApiKeyToKeychain(KC_KEY), /Keychain/);
+kc.failWrite = false;
+
+// 26. validateApiKey: read-only viewer query with the candidate key (not the stored one)
+calls.length = 0;
+const realFetch = globalThis.fetch;
+globalThis.fetch = async (url, init) => {
+  const body = JSON.parse(init.body);
+  calls.push({ url, headers: init.headers, body });
+  if (init.headers.Authorization !== "lin_api_candidate0000000000") {
+    return new Response(JSON.stringify({ errors: [{ message: "Authentication required", extensions: { code: "AUTHENTICATION_ERROR" } }] }), { status: 400 });
+  }
+  return new Response(JSON.stringify({ data: { viewer: { id: "u-new", name: "Madhu" } } }), { status: 200 });
+};
+assert.deepEqual(await linear.validateApiKey("lin_api_candidate0000000000"), { id: "u-new", name: "Madhu" });
+assert.equal(calls.length, 1);
+assert.equal(calls[0].headers.Authorization, "lin_api_candidate0000000000", "uses the candidate key");
+assert.match(calls[0].body.query, /viewer \{ id name \}/);
+assert.ok(!/mutation/.test(calls[0].body.query), "validation is read-only");
+await assert.rejects(linear.validateApiKey("lin_api_wrong00000000000000"), (e) => e.kind === "invalid_key");
+globalThis.fetch = async () => {
+  throw new Error("getaddrinfo ENOTFOUND api.linear.app");
+};
+await assert.rejects(linear.validateApiKey("lin_api_candidate0000000000"), (e) => e.kind === "api_error" && /Could not reach Linear/.test(e.message));
+globalThis.fetch = realFetch;
 
 console.log("verify: all checks passed");

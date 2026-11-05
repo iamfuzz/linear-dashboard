@@ -2,3 +2,7 @@
 .env.local
 node_modules
 .next
+dist/
+*.swp
+*.swo
+.DS_Store

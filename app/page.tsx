@@ -1,7 +1,9 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import AutoRefresh from "@/components/AutoRefresh";
 import ErrorState from "@/components/ErrorState";
 import Dashboard from "@/components/Dashboard";
+import QuitButton from "@/components/QuitButton";
 import RefreshButton from "@/components/RefreshButton";
 import { buildHref } from "@/components/Tabs";
 import { CACHE_TTL_MS, INITIATIVE_NAME } from "@/lib/config";
@@ -33,6 +35,10 @@ export default async function Page({
         : new LinearError("api_error", (err as Error)?.message ?? "Unknown error");
   }
 
+  // First run: no key anywhere yet, so go straight to the setup screen.
+  if (error?.kind === "missing_key") redirect("/setup");
+
+  const packagedApp = process.env.LINEAR_DASHBOARD_APP === "1";
   const people = data ? getPeople(data.issues, data.viewerId) : [];
   const person = people.find((p) => p.slug === requestedTab);
   const activeTab = person ? person.slug : "projects";
@@ -74,6 +80,10 @@ export default async function Page({
           </Link>
           <RefreshButton />
           <AutoRefresh intervalMs={CACHE_TTL_MS} />
+          <Link href="/setup" className="text-xs text-slate-500 hover:text-slate-800 hover:underline">
+            Change API key
+          </Link>
+          {packagedApp && <QuitButton />}
         </div>
       </header>
 
